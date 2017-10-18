@@ -1,4 +1,4 @@
-/* NetHack 3.6	options.c	$NHDT-Date: 1507164574 2017/10/05 00:49:34 $  $NHDT-Branch: NetHack-3.6.0 $:$NHDT-Revision: 1.311 $ */
+/* NetHack 3.6	options.c	$NHDT-Date: 1507846854 2017/10/12 22:20:54 $  $NHDT-Branch: NetHack-3.6.0 $:$NHDT-Revision: 1.315 $ */
 /* Copyright (c) Stichting Mathematisch Centrum, Amsterdam, 1985. */
 /* NetHack may be freely redistributed.  See license for details. */
 
@@ -129,6 +129,7 @@ static struct Bool_Opt {
     { "fullscreen", &iflags.wc2_fullscreen, FALSE, SET_IN_FILE },
     { "goldX", &iflags.goldX, FALSE, SET_IN_GAME },
     { "help", &flags.help, TRUE, SET_IN_GAME },
+    { "herecmd_menu", &iflags.herecmd_menu, FALSE, SET_IN_GAME },
     { "hilite_pet", &iflags.wc_hilite_pet, FALSE, SET_IN_GAME }, /*WC*/
     { "hilite_pile", &iflags.hilite_pile, FALSE, SET_IN_GAME },
     { "hitpointbar", &iflags.wc2_hitpointbar, FALSE, SET_IN_GAME }, /*WC2*/
@@ -652,7 +653,7 @@ initoptions()
      * lists of usernames into arrays with one name per element.
      */
 #endif
-#endif
+#endif /* SYSCF */
     initoptions_finish();
 }
 
@@ -809,12 +810,12 @@ initoptions_finish()
             config_error_done();
         }
     } else
-#endif
-        {
-            config_error_init(TRUE, (char *) 0, FALSE);
-            read_config_file((char *) 0, SET_IN_FILE);
-            config_error_done();
-        }
+#endif /* !MAC */
+    /*else*/ {
+        config_error_init(TRUE, (char *) 0, FALSE);
+        read_config_file((char *) 0, SET_IN_FILE);
+        config_error_done();
+    }
 
     (void) fruitadd(pl_fruit, (struct fruit *) 0);
     /*
@@ -828,6 +829,19 @@ initoptions_finish()
     if (iflags.bouldersym)
         update_bouldersym();
     reglyph_darkroom();
+
+#ifdef STATUS_HILITES
+    /*
+     * A multi-interface binary might only support status highlighting
+     * for some of the interfaces; check whether we asked for it but are
+     * using one which doesn't.
+     */
+    if (iflags.hilite_delta && !wc2_supported("statushilites")) {
+        raw_printf("Status highlighting not supported for %s interface.",
+                   windowprocs.name);
+        iflags.hilite_delta = 0;
+    }
+#endif
     return;
 }
 
@@ -1734,7 +1748,7 @@ char *tmpstr;
 
 boolean
 get_menu_coloring(str, color, attr)
-char *str;
+const char *str;
 int *color, *attr;
 {
     struct menucoloring *tmpmc;
@@ -3706,8 +3720,19 @@ boolean tinitial, tfrom_file;
                 vision_full_recalc = 1; /* delayed recalc */
                 if (iflags.use_color)
                     need_redraw = TRUE; /* darkroom refresh */
-            } else if (boolopt[i].addr == &iflags.wc_tiled_map
-                       || boolopt[i].addr == &flags.showrace
+            } else if (boolopt[i].addr == &iflags.wc_ascii_map) {
+                /* toggling ascii_map; set tiled_map to its opposite;
+                   what does it mean to turn off ascii map if tiled map
+                   isn't supported? -- right now, we do nothing */
+                iflags.wc_tiled_map = negated;
+                need_redraw = TRUE;
+            } else if (boolopt[i].addr == &iflags.wc_tiled_map) {
+                /* toggling tiled_map; set ascii_map to its opposite;
+                   as with ascii_map, what does it mean to turn off tiled
+                   map if ascii map isn't supported? */
+                iflags.wc_ascii_map = negated;
+                need_redraw = TRUE;
+            } else if (boolopt[i].addr == &flags.showrace
                        || boolopt[i].addr == &iflags.use_inverse
                        || boolopt[i].addr == &iflags.hilite_pile
                        || boolopt[i].addr == &iflags.hilite_pet) {
@@ -4158,9 +4183,13 @@ doset() /* changing options via menu by Per Liboriussen */
              "Other settings:",
              MENU_UNSELECTED);
 
-    for (i = 0; othropt[i].name; i++)
-        opts_add_others(tmpwin, othropt[i].name, othropt[i].code,
-                        NULL, othropt[i].othr_count_func());
+    for (i = 0; (name = othropt[i].name) != 0; i++) {
+        if ((is_wc_option(name) && !wc_supported(name))
+            || (is_wc2_option(name) && !wc2_supported(name)))
+            continue;
+        opts_add_others(tmpwin, name, othropt[i].code,
+                        (char *) 0, othropt[i].othr_count_func());
+    }
 
 #ifdef PREFIXES_IN_USE
     any = zeroany;
@@ -5506,7 +5535,8 @@ const char *mapping;
     ape = (struct autopickup_exception *) alloc(sizeof *ape);
     ape->regex = regex_init();
     if (!regex_compile(text, ape->regex)) {
-        config_error_add("%s: %s", APE_regex_error, regex_error_desc(ape->regex));
+        config_error_add("%s: %s", APE_regex_error,
+                         regex_error_desc(ape->regex));
         regex_free(ape->regex);
         free((genericptr_t) ape);
         return 0;
@@ -6080,6 +6110,8 @@ struct wc_Opt wc2_options[] = { { "fullscreen", WC2_FULLSCREEN },
                                 { "use_darkgray", WC2_DARKGRAY },
                                 { "hitpointbar", WC2_HITPOINTBAR },
                                 { "hilite_status", WC2_HILITE_STATUS },
+                                /* name shown in 'O' menu is different */
+                                { "status hilite rules", WC2_HILITE_STATUS },
                                 /* statushilites doesn't have its own bit */
                                 { "statushilites", WC2_HILITE_STATUS },
                                 { (char *) 0, 0L } };
@@ -6163,13 +6195,11 @@ STATIC_OVL boolean
 wc_supported(optnam)
 const char *optnam;
 {
-    int k = 0;
+    int k;
 
-    while (wc_options[k].wc_name) {
-        if (!strcmp(wc_options[k].wc_name, optnam)
-            && (windowprocs.wincap & wc_options[k].wc_bit))
-            return TRUE;
-        k++;
+    for (k = 0; wc_options[k].wc_name; ++k) {
+        if (!strcmp(wc_options[k].wc_name, optnam))
+            return (windowprocs.wincap & wc_options[k].wc_bit) ? TRUE : FALSE;
     }
     return FALSE;
 }
@@ -6223,13 +6253,12 @@ STATIC_OVL boolean
 wc2_supported(optnam)
 const char *optnam;
 {
-    int k = 0;
+    int k;
 
-    while (wc2_options[k].wc_name) {
-        if (!strcmp(wc2_options[k].wc_name, optnam)
-            && (windowprocs.wincap2 & wc2_options[k].wc_bit))
-            return TRUE;
-        k++;
+    for (k = 0; wc2_options[k].wc_name; ++k) {
+        if (!strcmp(wc2_options[k].wc_name, optnam))
+            return (windowprocs.wincap2 & wc2_options[k].wc_bit) ? TRUE
+                                                                 : FALSE;
     }
     return FALSE;
 }
